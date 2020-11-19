@@ -1,0 +1,320 @@
+#+TITLE: relations.asd
+
+* Introduction
+This package provides a first class representation of 'relations' as a
+set of abstract base classes which can then be manipulated using the
+standard relational operations:-
+1. Select
+2. Project
+3. Union
+4. Set difference (maybe not this one!)
+5. Cartesian product
+6. Rename
+
+It then provides:- 
+- a concrete implementation of these in terms of tables in a Postgres
+  database and, building on these...
+- A CLOS metaclass to provide an object-relational data model which
+  allows the definition of classes which are /also/ relations
+
+#+begin_src lisp
+(defclass company ()
+  ((id :reader id :type integer)
+   (name :initarg :name :reader name))
+  (:metaclass postgres-class))
+
+(select `(= (@ name) "Acme Limited") (find-class 'company))
+;; -> a relation which is a subset of the set of all companies
+;; printing the above in the SLIME debugger gives a nice, tabulated view of all the columns of that class
+
+(tuples *)
+;; -> retrieve the actual instances
+
+#+end_src
+
+* Relational Algebra
+Representing relations corresponding to Postgres tables and queries as
+first class objects allows us to have a reference to, say, a table which
+can be passed around to other functions. This reference can be
+manipulated with any relational functions (those above) to be narrowed
+down or joined onto other arbitrary relations. 
+
+Using a postgres table as an example we can do things like this:-
+
+#+begin_src lisp
+  
+(in-package :relations)
+
+;; every customer with id bigger than...
+(select `(> (@ id) 1000) (pg-table 'customer))
+
+;; find customers who are also suppliers
+(select '(= (@ customer name)
+          (@ supplier name))
+        (product (pg-table 'customer)
+                 (pg-table 'supplier)))
+
+(select '(= (@ order id) (@ order-item order))
+        (product (pg-table 'order)
+                 (pg-table 'order-item)))
+
+#+end_src
+  
+* API
+In select and project expressions, columns can be referenced as either
+~(@ column-name)~ or ~(@ table-name column-name)~ where both
+~column-name~ and ~table-name~ are lisp symbols which will be
+translated (in the case of Postgres tables) into table names by
+substituting hyphens with underscores. 
+
+** (product r1 r2)
+Take the cartesian product of two relations.
+
+Note that to take the product of more than 2 relations you would have to
+do ~(reduce #'product list-of-relations)~.
+
+** (select expression r)
+Select only those items in the relation ~r~ which satisfy the
+~expression~. The expression is a sexp (quoted) which can use the
+following set of operators: =, <, >, ...
+
+/to be continued.../
+
+* Object Relations
+~postgres-class~ is a metaclass (currently implemented using the CCL
+MOP API - this should be changed to use closer mop) which is used to
+create CLOS classes which are also valid relations as described above.
+
+** Foreign Keys
+Consider the following:-
+
+#+begin_src lisp
+(defclass order ()
+  ((id)
+   ;; NOTE - it would be better to use a specific date object. The ptype tells CL how to send a valid date
+   ;; to the database, but this is a bit of a hack.
+   ;; It means we get get-universal-time style dates, but they pprint nicely in the table view
+   (date :initarg :date :type integer :presentation-type date-and-time))
+  (:metaclass postgres-class)
+  (:primary-key id))
+
+(defclass product ()
+  ((id)
+   (name :type string :reader name))
+  (:metaclass postgres-class)
+  (:primary-key id))
+
+(defclass order-item ()
+  ((order :type order :reader order :initarg :order)
+   (product :type product :reader product :initarg :product)
+   (quantity :initarg :quantity :type (integer 1)
+             :reader quantity))
+  (:metaclass postgres-class))
+
+#+end_src
+
+The above 3 class definitions define 3 /relations/ which are also CLOS
+classes. This means we can pass the /classes/ to the relational
+functions (select, product, project etc):-
+
+#+begin_src lisp
+(select `(= (@ id) 123) (find-class 'order))
+#+end_src
+
+Doing so will yield another relation - not instances of the class. To
+get the instances one must use ~(tuples *)~ (or ~#'unique-tuple~ or
+~#'one-tuple~). The relation returned by ~(find-class 'order)~ is a set
+of tuples containing all the information of each instance, which, in
+this case, will just be an id and a date. 
+
+While testing code through SLIME in emacs you can happily pretty print
+the result of, for example, ~(find-class order-item)~ even if your
+database has many many rows. The print representation will be the
+first 10 tuples nicely tabulated.
+
+---
+
+Whereas we might ordinarily write an order class as
+#+begin_src lisp
+(defclass order ()
+  ((id)
+   (date :accessor date :initarg :date :type integer)
+   (order-items :initarg :order-items :type list :reader order-items)))
+#+end_src
+
+... this is not the way to do it with ~postgres-class~ since each
+instance of ~postgres-class~ /is/ a relation. 
+
+Now, if we wan't to get the items for some order we can do this:-
+#+begin_src lisp
+(tuples (select '(= (@ (order id)) 123)
+                (find-class 'order-item)))
+#+end_src
+
+This will return instances of the class ~order-item~ with /all/ slots
+filled in. The query that this generates and passes to PostgresQL will
+join in all the tables referenced by foreign keys automatically. It
+does this by using the declared type of the slot - if the type of the
+slot names a class which is an instance of ~postgres-class~ then that
+table is joined in. Thus when the instance is retrieved the ~order~
+slot of each ~order-item~ will be populated with an instance of an
+~order~ and /not/ just the ID of the order.
+
+The notation ~(@ (order id))~ drills down into 'compound' columns
+chasing the FK references. ~(@ order-item (order id))~ would be
+equivalent since ~order-item~ names the table. 
+
+So, if we want to easily get the order items from an order we could
+define:-
+#+begin_src lisp
+(defmethod order-items ((x order))
+  (tuples (select `(= (@ order) ,x)
+                  (find-class 'order-item))))
+#+end_src
+
+Here ~(@ order)~ means the value of the order column/slot of the
+order-item class, which (logically) is an instance of ~order~, so we
+can pass in the instance directly and not drill into the ~id~ column. 
+
+Now, examining this query you will see that it joins in the order
+table in order to get all the details for the order /as well as/ from
+the product and order-item tables. Although this works fine, it is
+more joining than is necessary since we already have the order, and so
+you can do this instead:-
+#+begin_src lisp
+(defmethod order-items ((x order))
+  (mapcar (insert-objects-for-slots (list 'order x))
+          (without-joining (order)
+            (tuples (select `(= (@ order) ,x)
+                            (find-class 'order-item))))))
+#+end_src
+
+This wouldn't matter in this example, but where many tables would be
+pulled in via the class of the specialiser (order in this case) it can
+significantly cut down on the work postgres has to do in optimizing
+and running the query, and on the amount of data returned. 
+
+** Creation
+To create data in the database simply do this:-
+#+begin_src lisp
+(let ((order (make-instance 'order :date (get-universal-time))))
+  (make-instance 'order-item
+                 :order order
+                 :product (find-instance 'product :name "Widget")
+                 :quantity 3)
+  (make-instance 'order-item
+                 :order order
+                 :product (find-instance 'product :name "Thingy")
+                 :quantity 1)
+  ;; newly created order
+  order)
+
+#+end_src
+
+Creating instances of this metaclass immediately creates rows in the
+database. A couple of things to note:-
+1. We didn't specify a value for the id slot. If the table is defined
+   with a bigserial id column in postgres then postgres will generate
+   that and tell Lisp what it used.
+2. To populate the ~order~ slot we pass the instance of the ~order~
+   class, not the id. 
+
+** Mutation
+The following works fine:-
+#+begin_src lisp
+(setf (date (find-instance 'order :id 123))
+      (get-universal-time))
+#+end_src
+
+... though perhaps falsifying order dates shouldn't be allowed. 
+
+As each order has a unique ID Lisp can generate a simple UPDATE
+statement in SQL to do this. If the table /did not/ have a simple
+primary key declared then the update will work by specifying the value
+of /every/ column in the update statement. This will also work fine,
+provided there are no duplicate rows (which don't really make sense in
+the relational model proper).
+
+Setting the slot value immediately executes the update
+statement. Clearly this won't work unless there is a current
+connection to the database (see database-core for an example of how to
+configure the connection parameters which will be used, and how to
+conenct to the database).
+
+** Recursive Relationships
+The following will not work, since the code for joining FK referenced
+tables will get stuck in an infinite loop while trying to query (I
+think the stack might overflow):-
+
+#+begin_src lisp
+(defclass clade (named-object)
+  ((name :accessor name :initarg :name)
+   (parent-clade :type clade :accessor parent-clade :initarg :parent-clade)
+   (description :initarg :description :accessor description)
+   (rank :type taxonomic-rank :initarg :rank :reader rank))
+  (:primary-key name)
+  (:metaclass postgres-class))
+
+#+end_src
+
+The following workaround is necessary:-
+#+begin_src lisp
+(defclass clade (named-object)
+  ((name :accessor name :initarg :name)
+   ;; unfortunately we have to have this slot typed as a string
+   (parent-clade :type string :accessor parent-clade-name :initarg :parent-clade-name)
+   (description :initarg :description :accessor description)
+   (rank :type taxonomic-rank :initarg :rank :reader rank))
+  (:primary-key name)
+  (:metaclass postgres-class))
+
+(defmethod parent-clade ((x clade))
+  (when (parent-clade-name x)
+    (find-instance 'clade :name (parent-clade-name x))))
+
+#+end_src
+
+Providing an initialize-instance method would also allow the parent
+clade to be passed as an instance directly, so papering over this
+limitation isn't a problem. 
+
+** Inheritence
+One of the motivations for the ~postgres-class~ metaclass was to
+enable inheritence of things in the database, so that methods (and
+combinations) can be used in executable code. 
+
+This is handled as follows:-
+
+Inheriting from a class which is /not/ a ~postgres-class~ has no
+effect on the columns in the table corresponding to the child
+class. This means there is (usually) little point giving slots to a
+non-postgres-class superclas of a postgre-class subclass as they will
+never be initialised from information in the database when doing
+queries. However, it can be useful for providing general methods.
+
+Inheriting from another ~postgres-class~ will basically, from the
+perspective of CL, just do the Right Thing. In order for that to work
+the following must hold:-
+
+#+begin_src lisp
+(defclass special-order (order)
+  ((details :initarg :details :reader details))
+  (:metaclass postgres-class)
+  (:foreign-key id))
+
+;; tables as follows:-
+(database-core:dquery "CREATE TABLE order (id bigserial primary key, date timestamp) ")
+(database-core:dquery "CREATE TABLE special_order (order bigint references order(id) primary key, details text not null) ")
+
+#+end_src
+
+The table ~special_order~ will contain a row for each instance of
+~order~ which is /also/ an instance of ~special-order~. Then
+~(find-instance 'order :id 45)~ will yield an instance of the CLOSS
+class ~special-order~ IFF there is a corresponding entry in that
+subclass table.
+
+It would probably be a bad idea to do too much of this as it
+potentially requires outer joining in a lot of extra tables,
+especially when there are many foreign key references too. We at VIP
+have used it sparingly. /Caveat emptor/.
