@@ -6,10 +6,10 @@ set of abstract base classes which can then be manipulated using the
 standard relational operations:-
 1. Select
 2. Project
-3. Union
-4. Set difference (maybe not this one!)
-5. Cartesian product
-6. Rename
+3. Cartesian product
+4. Rename
+5. Union (not implemented yet)
+6. Set difference (not implemented yet)
 
 It then provides:- 
 - a concrete implementation of these in terms of tables in a Postgres
@@ -54,6 +54,8 @@ Using a postgres table as an example we can do things like this:-
         (product (pg-table 'customer)
                  (pg-table 'supplier)))
 
+;; CREATE TABLE "order" (id bigserial primary key)
+;; CREATE TABLE "order_item" ("order" bigint references "order"(id), ...)
 (select '(= (@ order id) (@ order-item order))
         (product (pg-table 'order)
                  (pg-table 'order-item)))
@@ -63,22 +65,106 @@ Using a postgres table as an example we can do things like this:-
 * API
 In select and project expressions, columns can be referenced as either
 ~(@ column-name)~ or ~(@ table-name column-name)~ where both
-~column-name~ and ~table-name~ are lisp symbols which will be
+~column-name~ and ~table-name~ are can be lisp symbols which will be
 translated (in the case of Postgres tables) into table names by
-substituting hyphens with underscores. 
+substituting hyphens with underscores. For ~postgres-class~ the
+~column-name~ can also be a list of symbols to specify foreign key
+referenced columns in joined tables. See below for examples. 
 
-** (product r1 r2)
-Take the cartesian product of two relations.
+** Relational Operations
+*** (select expression r)
+ Select only those items in the relation ~r~ which satisfy the
+ ~expression~. The expression is a sexp (quoted) which can use the
+ various standard operators: =, <, >, and, or, and so on. The exact
+ operators which can be used depend on how the expression will be
+ evaluated. In the case of relations represented by ~pg-table~ (which
+ is currently all that is implemented here) the expression will be
+ translated into an SQL expression (by ~#'expression-to-sql~ in
+ postgres-interface.lisp).
 
-Note that to take the product of more than 2 relations you would have to
-do ~(reduce #'product list-of-relations)~.
+ #+begin_src lisp
+ (select '(and
+           (> (@ count) 23)
+           ;; as we're translating into SQL 
+           (= (@ name) "Smith"))
+         (pg-table 'name-count))
+ #+end_src
 
-** (select expression r)
-Select only those items in the relation ~r~ which satisfy the
-~expression~. The expression is a sexp (quoted) which can use the
-following set of operators: =, <, >, ...
+*** (project columns r)
+ Make a projection of a relation by selecting only some of the
+ columns. 
 
-/to be continued.../
+ The ~columns~ parameter is a list of projecttion specifications, each
+ of which is a list of:-
+ - source column (eg ~(@ column-name)~ or ~(@ table-name column-name)~
+ - target column name as a symbol
+
+ For example:-
+
+ #+begin_src lisp
+ (project (list '((@ id) company)
+                '((@ name) company-name))
+          (pg-table 'company))
+ #+end_src
+
+ /to be continued.../
+
+*** (product r1 r2)
+ Take the cartesian product of two relations.
+
+ Note that to take the product of more than 2 relations you would have to
+ do ~(reduce #'product list-of-relations)~.
+
+*** (rename name r)
+ Rename a relation. This is useful when taking the product of a
+ relation with itself, for example, as it allows refering to each
+ instance of the same relation. /Name/ should be a symbol. 
+
+*** (map-tuples function r)
+Apply the ~function~ to each tuple in ~r~. This does not return a new
+relation (or anything useful). 
+
+#+begin_src lisp
+(in-package :relations)
+(map-tuples (lambda (row)
+              (format t "~A --- ~A~%" (first row) (second row)))
+            (pg-table 'brand))
+#+end_src
+
+*** (limit n r)
+Return a new relation containing no more than ~n~ of the items from
+~r~. 
+
+** Postgres API
+*** (pg-table name)
+Returns a relation corresponding to the postgres table identified by
+~name~, which can be a symbol which will be translated into SQL
+(substituting hyphens for underscores). 
+
+#+begin_src lisp
+(pg-table 'brand)
+#+end_src
+
+** Tuple access
+*** (tuples r)
+Returns all the tuples of a relation as a list. For postgres classes
+this will return tuples as a list of lists. 
+#+begin_src lisp
+(tuples (pg-table 'brand))
+#+end_src
+
+*** (unique-tuple r)
+Get the only tuple of the relation. If the relation contains >1 tuple
+then this will error. 
+
+*** (one-tuple r)
+Get one of the tuples from the relation. Which one is unspecified. If
+the relation has been ordered then it will get the first. 
+
+*** (tuple-count r)
+Return number of tuples in the relation. In the general case this is
+done by mapping over all of them, but for accessing postgres tables it
+just asks postgres for the count.
 
 * Object Relations
 ~postgres-class~ is a metaclass (currently implemented using the CCL
@@ -100,7 +186,7 @@ Consider the following:-
 
 (defclass product ()
   ((id)
-   (name :type string :reader name))
+   (name :type string :reader name :initarg :name))
   (:metaclass postgres-class)
   (:primary-key id))
 
@@ -132,7 +218,7 @@ the result of, for example, ~(find-class order-item)~ even if your
 database has many many rows. The print representation will be the
 first 10 tuples nicely tabulated.
 
----
+-----
 
 Whereas we might ordinarily write an order class as
 #+begin_src lisp
