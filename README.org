@@ -85,7 +85,7 @@ referenced columns in joined tables. See below for examples.
  #+begin_src lisp
  (select '(and
            (> (@ count) 23)
-           ;; as we're translating into SQL 
+           ;; as we're translating into SQL we just use '=' for equality
            (= (@ name) "Smith"))
          (pg-table 'name-count))
  #+end_src
