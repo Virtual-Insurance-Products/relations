@@ -94,7 +94,7 @@ referenced columns in joined tables. See below for examples.
  Make a projection of a relation by selecting only some of the
  columns. 
 
- The ~columns~ parameter is a list of projecttion specifications, each
+ The ~columns~ parameter is a list of projection specifications, each
  of which is a list of:-
  - source column (eg ~(@ column-name)~ or ~(@ table-name column-name)~
  - target column name as a symbol
@@ -107,8 +107,6 @@ referenced columns in joined tables. See below for examples.
           (pg-table 'company))
  #+end_src
 
- /to be continued.../
-
 *** (product r1 r2)
  Take the cartesian product of two relations.
 
@@ -117,7 +115,7 @@ referenced columns in joined tables. See below for examples.
 
 *** (rename name r)
  Rename a relation. This is useful when taking the product of a
- relation with itself, for example, as it allows refering to each
+ relation with itself, for example, as it allows referring to each
  instance of the same relation. /Name/ should be a symbol. 
 
 *** (map-tuples function r)
@@ -134,6 +132,15 @@ relation (or anything useful).
 *** (limit n r)
 Return a new relation containing no more than ~n~ of the items from
 ~r~. 
+
+*** (relation-columns r)
+Returns a list of the columns of the relation, which will be instances
+of ~relation-column~ or a subclass thereof. 
+
+#+begin_src lisp
+(relation-columns (pg-table 'brand))
+(relation-columns (find-class 'brand))
+#+end_src
 
 ** Postgres API
 *** (pg-table name)
@@ -165,6 +172,31 @@ the relation has been ordered then it will get the first.
 Return number of tuples in the relation. In the general case this is
 done by mapping over all of them, but for accessing postgres tables it
 just asks postgres for the count.
+
+** postgres-class methods
+*** (find-instance class/class-name &rest args)
+Retrieve the unique instance of the designated ~postgres-class~ class
+from the database as identified by ~args~.
+
+~args~ can be /either/ a 'select' expression as used by ~#'select~
+above /or/ a column name keyword followed by a value. This is a
+convenience notation. This the following are equivalent:-
+
+- ~(find-instance 'company '(= (@ id) 123))~
+- ~(find-instance 'company :id 123)~
+
+Any column can be used in place of ~:id~. 
+
+This is a convenience method provided as a shorthand for ~(tuples
+(select ...))~
+
+*** (find-instances class/class-name &rest args)
+As with ~find-instance~ but this permits there to be more than one
+matching instance and returns them as a list. 
+
+*** (delete-object o)
+Deletes an object from the database if it is an instance of a
+~postrgres-class~ class. 
 
 * Object Relations
 ~postgres-class~ is a metaclass (currently implemented using the CCL
@@ -228,8 +260,7 @@ Whereas we might ordinarily write an order class as
    (order-items :initarg :order-items :type list :reader order-items)))
 #+end_src
 
-... this is not the way to do it with ~postgres-class~ since each
-instance of ~postgres-class~ /is/ a relation. 
+... this is not the way to do it with ~postgres-class~. 
 
 Now, if we wan't to get the items for some order we can do this:-
 #+begin_src lisp
