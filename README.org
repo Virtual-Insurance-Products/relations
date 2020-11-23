@@ -444,7 +444,7 @@ the following must hold:-
 
 The table ~special_order~ will contain a row for each instance of
 ~order~ which is /also/ an instance of ~special-order~. Then
-~(find-instance 'order :id 45)~ will yield an instance of the CLOSS
+~(find-instance 'order :id 45)~ will yield an instance of the CLOS
 class ~special-order~ IFF there is a corresponding entry in that
 subclass table.
 
