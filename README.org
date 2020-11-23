@@ -39,6 +39,10 @@ can be passed around to other functions. This reference can be
 manipulated with any relational functions (those above) to be narrowed
 down or joined onto other arbitrary relations. 
 
+No database queries will be executed until we ask for the /tuples/ of
+the relation (including by printing a relation in the SLIME
+debugger). 
+
 Using a postgres table as an example we can do things like this:-
 
 #+begin_src lisp
@@ -311,7 +315,7 @@ pulled in via the class of the specialiser (order in this case) it can
 significantly cut down on the work postgres has to do in optimizing
 and running the query, and on the amount of data returned. 
 
-** Creation
+** Instance Creation
 To create data in the database simply do this:-
 #+begin_src lisp
 (let ((order (make-instance 'order :date (get-universal-time))))
@@ -435,3 +439,6 @@ It would probably be a bad idea to do too much of this as it
 potentially requires outer joining in a lot of extra tables,
 especially when there are many foreign key references too. We at VIP
 have used it sparingly. /Caveat emptor/.
+** Not Implemented
+~postgres-class~ does not, as yet, implement postgres table creation,
+so this must be done by hand. It would be useful to add. 
