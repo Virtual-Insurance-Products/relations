@@ -422,7 +422,7 @@ This is handled as follows:-
 Inheriting from a class which is /not/ a ~postgres-class~ has no
 effect on the columns in the table corresponding to the child
 class. This means there is (usually) little point giving slots to a
-non-postgres-class superclas of a postgre-class subclass as they will
+non-postgres-class superclass of a postgres-class subclass as they will
 never be initialised from information in the database when doing
 queries. However, it can be useful for providing general methods.
 
@@ -434,7 +434,7 @@ the following must hold:-
 (defclass special-order (order)
   ((details :initarg :details :reader details))
   (:metaclass postgres-class)
-  (:foreign-key id))
+  (:primary-key id))
 
 ;; tables as follows:-
 (database-core:dquery "CREATE TABLE order (id bigserial primary key, date timestamp) ")
