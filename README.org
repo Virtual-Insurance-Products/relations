@@ -235,6 +235,19 @@ Consider the following:-
 
 #+end_src
 
+Database tables for the above might be defined as:-
+#+begin_src sql
+CREATE TABLE order (id bigserial primary key, date timestamp not null);
+CREATE TABLE product (id bigserial primary key, name text not null);
+CREATE TABLE order_item (
+order bigint references order(id) not null,
+product bigint references product(id) not null,
+quantity int not null);
+#+end_src
+
+*Note*: postgres-class does not /require/ explicit primary keys and
+can generally work with arbitrary database schemas.
+
 The above 3 class definitions define 3 /relations/ which are also CLOS
 classes. This means we can pass the /classes/ to the relational
 functions (select, product, project etc):-
