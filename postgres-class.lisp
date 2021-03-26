@@ -39,6 +39,29 @@
    (source-table :initarg :source-table :reader source-table)
    (source-relation :initarg :source-relation :accessor source-relation)))
 
+(defun check-foreign-key-declaration (class)
+  (when (and (slot-boundp class 'primary-key)
+             ;; I don't know what to do about non-simple primary keys here
+             (not (second (slot-value class 'primary-key))))
+    (unless (find (first (slot-value class 'primary-key))
+                  (ccl:class-direct-slots class)
+                  :key #'ccl:slot-definition-name)
+      (error "The declared primary key (~A) must be a direct slot of the class"
+             (slot-value class 'primary-key)))))
+
+;; this will clear it out if we reinitialize
+(defmethod reinitialize-instance :before ((x postgres-class) &rest initargs)
+  (declare (ignore initargs))
+  (slot-makunbound x 'primary-key))
+
+(defmethod reinitialize-instance :after ((x postgres-class) &rest initargs)
+  (declare (ignore initargs))
+  (check-foreign-key-declaration x))
+
+(defmethod initialize-instance :after ((x postgres-class) &rest initargs)
+  (declare (ignore initargs))
+  (check-foreign-key-declaration x))
+
 (defmethod source-table :before ((x postgres-class))
   (unless (slot-boundp x 'source-table)
     (setf (slot-value x 'source-table)
@@ -89,7 +112,8 @@
   (if (dynamically-generated-class-p x)
       (print-unreadable-object (x s)
         (format s "~A" (mapcar #'class-name (ccl:class-direct-superclasses x))))
-      (call-next-method)))
+      (print-unreadable-object (x s)
+        (format s "~A ~A" 'postgres-class (class-name x)))))
 
 ;; now, we have to provide a wrapper around expresion-to-sql to deal with this...
 
@@ -402,9 +426,17 @@
               (primary-key-value b))))
 
 (defun simple-primary-key (class)
-  (and (slot-boundp class 'primary-key)
-       (not (cdr (primary-key class)))
-       (first (primary-key class))))
+  (let ((relevant-supers (remove-if-not (lambda (class)
+                                          (typep class 'postgres-class))
+                                        (ccl:class-direct-superclasses class))))
+    (if relevant-supers
+        (find nil (mapcar #'simple-primary-key relevant-supers)
+              :test-not #'eql)
+
+        (and (slot-boundp class 'primary-key)
+             (not (cdr (primary-key class)))
+             (first (primary-key class))))))
+
 
 (defun fk-slot-p (slot-definition)
   (let ((type (ccl:slot-definition-type slot-definition)))
@@ -506,7 +538,17 @@
                                                       when boundp
                                                       collect (pg-value-for-slot slot (slot-value instance slot-name))))))
                            ;; If there are no direct slots for this class there is nothing to do here
-                           (let ((simple-pk (simple-primary-key class)))
+                           (let ((simple-pk (awhen (simple-primary-key class)
+                                              ;; it has to be defined on /this/ class - otherwise I'll just ignore it
+                                              ;; (the generated id will be handled in making the row for the superclass
+                                              ;; - this caused a nasty error which DK spotted)
+
+                                              ;; the only sort of problem here is that we can't let the DB handle enforcing
+                                              ;; references to a subclass of another postgre-class by declaring an FK reference
+                                              ;; to the subclass table. That would be nice. Probably not a big problem most of
+                                              ;; the time? It can be enforced in CLOS of course.
+                                              (when (find it (ccl:class-direct-slots class) :key #'ccl:slot-definition-name)
+                                                it))))
                              (when (and (or (cdr expression)
                                             simple-pk)
                                         (not (dynamically-generated-class-p class)))
@@ -796,7 +838,9 @@ Note the class MUST MUST have an init arg of :id,"
 (defmethod id ((x acceptable-object-with-id))
   (slot-value x 'id))
 
-
+(defmethod id-equal ((x acceptable-object-with-id) (y acceptable-object-with-id))
+  (and (eq  (type-of x) (type-of y))
+       (eql (id x)      (id y))))
 
 (defun class-name-to-string (class-name)
   (string-capitalize (cl-ppcre:regex-replace-all "-" (symbol-name class-name) " ")))
@@ -941,12 +985,17 @@ It returns the referent."
   (declare (ignore all))
   (find-instances referring-class
                   (ccl:slot-definition-name
-                   (find (class-name (class-of refering-to))
-                         (ccl:class-slots (find-class referring-class))
-                         :key #'ccl:slot-definition-type))
+                   (find-if (lambda (slot)
+                              ;; (break "SLot: ~A type ~A" slot (ccl:slot-definition-type slot))
+                              (and (symbolp (ccl:slot-definition-type slot))
+                                   (typep (find-class (ccl:slot-definition-type slot)) 'rel:postgres-class)
+                                   (subtypep (class-name (class-of refering-to))
+                                             (ccl:slot-definition-type slot))))
+                            (ccl:class-slots (find-class referring-class))))
                   refering-to))
 
 ;; (find-references 'v1::cover-duration (rel:find-instance 'v1:underwriter-product :id 8117))
+;; (find-references 'v1::cover-duration (rel:find-instance 'v1:underwriter-product :id 6399))
 
 (defmethod object-key (x)
   (when (and (typep (class-of x) 'postgres-class)
