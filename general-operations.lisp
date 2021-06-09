@@ -341,7 +341,23 @@
                (return-from @ (if (cdr path)
                                   (@ (slot-value x (first path))
                                      (cdr path))
-                                  (slot-value x (first path)))))))
+                                  ;; this is a bit ad-hoc. It might be
+                                  ;; better to transform =, < and >
+                                  ;; operations into some kind of
+                                  ;; generic version.
+                                  (let ((value (slot-value x (first path))))
+                                    (typecase value
+                                      ;; These shouldn't be here, but
+                                      ;; fixing this probably requires
+                                      ;; making this @ generic
+                                      ;; somehow.  I had to
+                                      ;; incorporate them to fix a
+                                      ;; problem with the VIP system
+                                      ;; using these.
+                                      #+algebraic-data-types(adt:db.date (adt:seconds-since-epoch value))
+                                      #+algebraic-data-types(adt:db.time (adt:seconds-since-epoch value))
+                                      ;; !!! FIXME: publish the ADT package
+                                      (t value))))))))
       (if (listp object)
           (mapcar #'f object)
           (f object))
@@ -401,6 +417,25 @@
                               (lambda ()
                                 `(let ((*obj* (vip-utils:flatten *obj*)))
                                    ,(walk x)))))))
+
+
+(defmethod cast (what (type (eql :timestamp)))
+  (cond ((equal what "now")
+         (get-universal-time))
+        ;; !!! FIXME
+        (t (error "Casting to timestamp in lispified queries isn't working yet"))))
+;; (cast "now" :timestamp)
+;; (cast "2020-01-01 16:34" :timestamp)
+
+;; I need this to give me a number. Close enough will do
+#+algebraic-data-types(defmethod cast (what (type (eql :interval)))
+  (let ((interval (accept-from-string 'adt:time-interval what)))
+    (or (ignore-errors (adt:number-of-seconds interval))
+        (adt:ematch interval
+                    ((adt:time-interval n :year)
+                     (* n (+ 365 1/4) 24 3600))))))
+;; (adt:normalised-time-interval (adt:time-interval (cast "3 years" :interval) :second))
+
 
 
 (define-presentation-method presentation-typep (object (type satisfies-expression))
