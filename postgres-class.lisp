@@ -112,8 +112,10 @@
   (if (dynamically-generated-class-p x)
       (print-unreadable-object (x s)
         (format s "~A" (mapcar #'class-name (ccl:class-direct-superclasses x))))
-      (print-unreadable-object (x s)
-        (format s "~A ~A" 'postgres-class (class-name x)))))
+      (if *print-pretty*
+          (call-next-method)
+          (print-unreadable-object (x s)
+            (format s "~A ~A" 'postgres-class (class-name x))))))
 
 ;; now, we have to provide a wrapper around expresion-to-sql to deal with this...
 
