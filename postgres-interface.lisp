@@ -62,6 +62,9 @@
         (write-sequence ")" stream))
       (format nil "~A (~A)" op (expression-to-sql (first operands)))))
 
+(defmethod expression-operation-to-sql ((op (eql 'cast)) &rest operands)
+  (format nil "(~A)::~A" (expression-to-sql (first operands))
+          (second operands)))
 
 (defmethod expression-to-sql (x)
   (database-core:sql-literal x))

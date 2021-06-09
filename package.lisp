@@ -23,6 +23,7 @@
            #:runion
            #:rename
            #:join
+           #:cast ; cast SQL values
            
            #:left-join
            #:inner-join
