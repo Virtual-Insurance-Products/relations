@@ -15,6 +15,17 @@
    (path :initarg :path :reader attribute-path)
    (primary-key-p :initarg :primary-key-p :initform nil :reader primary-key-p)))
 
+(defclass superclass-projection-column (projection-column)
+  ((target-object :initarg :target-object :reader attribute-target-object)
+   (target-class :initarg :target-class :reader attribute-target-class)))
+
+(defmethod print-object ((x slot-projection-column) (s stream))
+  (print-unreadable-object (x s)
+    (format s "~A (~A.~A)"
+            (class-name (class-of x))
+            (attribute-target-class x)
+            (attribute-target-slot x))))
+
 
 (defclass postgres-class-slot-definition (ccl:standard-slot-definition)
   ((presentation-type :initarg :presentation-type :reader slot-definition-presentation-type)
@@ -134,9 +145,10 @@
           (let ((classes (mapcar #'class-name (ccl:class-precedence-list c))))
             (remove-if-not (lambda (column)
                              ;; !!! Leave in the FK references but take out any subclass columns
-                             (or (cdr (attribute-path column))
-                                 (member (attribute-target-class column)
-                                         classes)))
+                             (and (typep column 'slot-projection-column)
+                                  (or (cdr (attribute-path column))
+                                      (member (attribute-target-class column)
+                                              classes))))
                            (relation-columns (r0 c))))))
 
 (defun extract-attribute (attribute &optional extend-path)
@@ -203,12 +215,14 @@
 
                  (when superclass-column-name
                    ;; This won't appear as the value of any object's slot
-                   (push (make-instance 'projection-column
+                   (push (make-instance 'superclass-projection-column
                                         ;; !!! This assumes that the name of the column referencing the
                                         ;; superclass will always by the name of the table of the superclass.
                                         ;; I should make a way of overriding this assumption. 
                                         :expression `(@ ,table-name ,(source-table superclass))
-                                        :name superclass-column-name)
+                                        :name superclass-column-name
+                                        :target-class (class-name class)
+                                        :target-object object-id)
                          attributes))
 
                  (let ((visited (cons class visited)))
@@ -225,12 +239,23 @@
                                                                class)))
                                    (setf rel
                                          (if super-p
-                                             (join :inner
-                                                   `(= (@ ,table-name ,(source-table other))
-                                                       (@ ,(name (find (simple-primary-key other)
-                                                                       (relation-columns other-relation)
-                                                                       :key #'attribute-target-slot))))
-                                                   rel (rename (gensym "ST") other-relation))
+                                             (let ((merged (join :inner
+                                                                 `(= (@ ,table-name ,(source-table other))
+                                                                     (@ ,(name (find (simple-primary-key other)
+                                                                                     (relation-columns other-relation)
+                                                                                     :key #'attribute-target-slot))))
+                                                                 rel (rename (gensym "ST") other-relation))))
+
+                                               (push (make-instance 'superclass-projection-column
+                                                                    ;; !!! This assumes that the name of the column referencing the
+                                                                    ;; superclass will always by the name of the table of the superclass.
+                                                                    ;; I should make a way of overriding this assumption. 
+                                                                    :expression `(@ ,table-name ,(source-table other))
+                                                                    :name superclass-column-name
+                                                                    :target-class (class-name class)
+                                                                    :target-object object-id)
+                                                     attributes)
+                                               merged)
                                              (join :left
                                                    `(= (@ ,superclass-column-name)
                                                        ,(if (member (simple-primary-key class)
@@ -256,8 +281,7 @@
                                    ;; now we have to re-project all the attributes
                                    ;; visit will always return a projection
                                    (mapcar (lambda (a)
-                                             (when (typep a 'slot-projection-column)
-                                               (push (extract-attribute a) attributes)))
+                                             (push (extract-attribute a) attributes))
                                            (relation-columns other-relation))))))
 
                      (link-other-classes (ccl:class-direct-superclasses class) :super-p t)
@@ -374,6 +398,7 @@
                   for att in attributes
                   ;; !!! Ideally I want to be able to distinguish null
                   ;; should I check the class has the slot?
+                  when (typep att 'slot-projection-column)
                   do
                      (with-slots (target-object target-slot foreign-key-ref target-class)
                          att
