@@ -19,6 +19,8 @@
   ((target-object :initarg :target-object :reader attribute-target-object)
    (target-class :initarg :target-class :reader attribute-target-class)))
 
+(defmethod primary-key-p ((x superclass-projection-column)) nil)
+
 (defmethod print-object ((x slot-projection-column) (s stream))
   (print-unreadable-object (x s)
     (format s "~A (~A.~A)"
