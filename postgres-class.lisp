@@ -21,6 +21,8 @@
 
 (defmethod primary-key-p ((x superclass-projection-column)) nil)
 
+(defmethod attribute-target-slot ((x superclass-projection-column)) nil)
+
 (defmethod print-object ((x slot-projection-column) (s stream))
   (print-unreadable-object (x s)
     (format s "~A (~A.~A)"
