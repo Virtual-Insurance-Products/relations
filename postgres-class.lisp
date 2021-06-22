@@ -116,6 +116,22 @@
 (defmethod ccl:validate-superclass ((superclass standard-class) (class postgres-class)) t)
 
 
+(defmethod ccl:compute-slots ((class postgres-class))
+  (let ((slots (call-next-method)))
+    
+    (append
+     ;; Slot to keep track of demand loading
+     (list 
+      (make-instance 'ccl:standard-effective-slot-definition
+                     :class class
+                     :initargs '(:retrieved-from-database)
+                     :type t
+                     :initform nil
+                     :type 'boolean
+                     :allocation :instance
+                     :name '%retrieved-from-database))
+     
+     slots)))
 
 
 (defun dynamically-generated-class-p (class)
@@ -395,7 +411,9 @@
                              ;; better to call this than make-instance
                              ;; - we aren't creating a new object, just thawing one from the database.
                              ;; We don't want initialize-instance methods to fire. 
-                             (allocate-instance (find-class (first v)))))))
+                             (let ((instance (allocate-instance (find-class (first v)))))
+                               (setf (slot-value instance '%retrieved-from-database) t)
+                               instance)))))
                     
                     
             (loop for value in row
@@ -426,6 +444,7 @@
 ;; the attributes we report will be only those for the given class. If it's a subclass we still only get those ones.
 (defmethod attribute-values-for-relation (x (class postgres-class))
   (loop for slot in (mapcar #'ccl:slot-definition-name (ccl:class-slots class))
+     unless (eq slot '%retrieved-from-database)
      collect (if (slot-boundp x slot)
                  (slot-value x slot)
                  ;; !!! What should I return here? A special slot-unbound value is needed. 
@@ -542,7 +561,9 @@
   ;; we want the object to be fully set up *before* we persist it to the database
   (let ((instance (let ((*suppress-database-insertion* t))
                     (call-next-method))))
-    
+    ;; when creating the instance this will always be effectively true
+    (setf (slot-value instance '%retrieved-from-database) t)
+
     (unless *suppress-database-insertion*
       ;; because we might visit the same class more than once, we must remember not to repeatedly insert into the same table
       (let ((inserted (make-hash-table)))
@@ -648,7 +669,9 @@
   "Creates an instance of the given class with the id without fetching anything from the database.
 Note the class MUST MUST have an init arg of :id,"
   (let ((*suppress-database-insertion* t))
-    (apply #'make-instance class initargs)))
+    (let ((instance (apply #'make-instance class initargs)))
+      (setf (slot-value instance '%retrieved-from-database) nil)
+      instance)))
 
 
 ;; This gets an instance by id
@@ -1112,3 +1135,51 @@ It returns the referent."
         (id-b (relation-identity b)))
     (and id-a id-b
          (equal id-a id-b))))
+
+
+
+;; Demand loading mechanism...
+
+;; Find the original direct slot definition
+(defmethod original-direct-slot-definition ((class rel:postgres-class) slot-name &optional (metaclass 'standard-class))
+  (dolist (candidate (reverse (c2mop:class-precedence-list class)))
+    (awhen (and (typep candidate metaclass)
+                (find slot-name (c2mop:class-direct-slots candidate)
+                      :key #'c2mop:slot-definition-name))
+      (return (values it candidate)))))
+
+;; override this method to implement caching
+(defmethod demand-load-from-database ((class postgres-class) x slot-name
+                                      source-slot-definition
+                                      slot-unbound-method)
+  (declare (ignore source-slot-definition))
+  (let ((retrieved (rel:find-instance (class-name class) :id (rel:id x))))
+    (let ((*suppress-database-insertion* t))
+      (setf (slot-value x '%retrieved-from-database) t)
+      (loop for s in (mapcar #'c2mop:slot-definition-name
+                             (c2mop:class-slots class))
+         when (slot-boundp retrieved s)
+         do (setf (slot-value x s)
+                  (slot-value retrieved s))))
+    (if (slot-boundp x slot-name)
+        (slot-value x slot-name)
+        (funcall slot-unbound-method))))
+
+;; this could be optimized to cache a function on the slot definition for loading cached slot values
+(defmethod slot-unbound ((class rel:postgres-class) x slot-name)
+  (let ((pk (simple-primary-key class)))
+    (if (or (not pk)
+            (eql slot-name pk)
+            (slot-value x '%retrieved-from-database))
+
+        (call-next-method)
+
+        ;; we only try to demand load the object from the database if THIS slot is declared in a postgres-class
+        (multiple-value-bind (slot-definition class)
+            (original-direct-slot-definition class slot-name 'postgres-class)
+          (if slot-definition
+              (demand-load-from-database class x slot-name
+                                         slot-definition
+                                         #'(lambda () (call-next-method)))
+              (call-next-method))))))
+
