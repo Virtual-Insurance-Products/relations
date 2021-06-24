@@ -768,27 +768,6 @@ Note the class MUST MUST have an init arg of :id,"
       (call-next-method)))
 
 
-;; now we can lazily load the slot if it is an FK reference and isn't bound...
-(defmethod ccl:slot-value-using-class :before
-    ((class postgres-class)
-     instance (slotd ccl:standard-effective-slot-definition))
-  (let ((name (ccl:slot-definition-name slotd)))
-    (when (and (not (slot-boundp instance name))
-               (fk-slot-p slotd))
-      ;; now we have to lazily initialize it...
-      (let ((*no-fk-joins* nil)
-            (*unjoined-classes* nil)
-            (new (find-instance (class-name class)
-                                (simple-primary-key class)
-                                (primary-key-value instance))))
-        (let ((*suppress-database-insertion* t))
-          (loop for slot in (mapcar #'ccl:slot-definition-name
-                                    (ccl:class-slots class))
-                when (and (not (slot-boundp instance slot))
-                          (slot-boundp new slot))
-                  do (setf (slot-value instance slot)
-                           (slot-value new slot))))))))
-
 (defmethod ccl:slot-makunbound-using-class ((class postgres-class) instance (slotd ccl:standard-effective-slot-definition))
   (awhen (setf (ccl:slot-value-using-class (find-class 'standard-class) instance slotd) (ccl::%slot-unbound-marker))
     (database-core:dquery
